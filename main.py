@@ -83,7 +83,7 @@ def create_gorgias_ticket(comment):
             f"**Video ID:** {comment['video_id']}\n"
             f"**Published At:** {comment['published_at']}"
         ),
-        "tags": ["YouTube", "Comment"]
+        "tags": ["YouTube", "Comment"]  # Add tags here
     }
 
     headers = {
