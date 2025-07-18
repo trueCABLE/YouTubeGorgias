@@ -46,44 +46,54 @@ def save_last_synced_comment(comment_id):
 # === YouTube API ===
 def fetch_youtube_comments():
     """Fetch the latest comments from your YouTube channel."""
-    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    try:
+        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-    # Request to get comments for the channel
-    request = youtube.commentThreads().list(
-        part="snippet",
-        allThreadsRelatedToChannelId=CHANNEL_ID,
-        maxResults=20,  # Adjust as needed
-        order="time"  # Fetch the latest comments first
-    )
-    response = request.execute()
+        # Request to get comments for the channel
+        request = youtube.commentThreads().list(
+            part="snippet",
+            allThreadsRelatedToChannelId=CHANNEL_ID,
+            maxResults=20,  # Adjust as needed
+            order="time"  # Fetch the latest comments first
+        )
+        response = request.execute()
 
-    # Extract comment details
-    comments = []
-    for item in response.get("items", []):
-        snippet = item["snippet"]["topLevelComment"]["snippet"]
-        comment_data = {
-            "id": item["id"],
-            "author": snippet["authorDisplayName"],
-            "text": snippet["textDisplay"],
-            "published_at": snippet["publishedAt"],
-            "video_id": snippet["videoId"],
-        }
-        comments.append(comment_data)
+        # Extract comment details
+        comments = []
+        for item in response.get("items", []):
+            snippet = item["snippet"]["topLevelComment"]["snippet"]
+            comment_data = {
+                "id": item["id"],
+                "author": snippet["authorDisplayName"],
+                "text": snippet["textDisplay"],
+                "published_at": snippet["publishedAt"],
+                "video_id": snippet["videoId"],
+            }
+            comments.append(comment_data)
 
-    return comments
+        return comments
+
+    except Exception as e:
+        print(f"Error fetching YouTube comments: {e}")
+        return []
 
 # === Gorgias API ===
 def create_gorgias_ticket(comment):
     """Create a Gorgias ticket for a YouTube comment."""
+    # Construct the link to the highlighted comment
+    comment_link = f"https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']}"
+
+    # Create the ticket payload
     ticket_data = {
         "subject": f"New Comment from {comment['author']}",
         "description": (
             f"**Comment:** {comment['text']}\n\n"
             f"**Author:** {comment['author']}\n"
-            f"**Video ID:** {comment['video_id']}\n"
-            f"**Published At:** {comment['published_at']}"
+            f"**Published At:** {comment['published_at']}\n\n"
+            f"[View Comment on YouTube]({comment_link})"
         ),
-        "tags": ["YouTube", "Comment"]  # Add tags here
+        "tags": ["YouTube", "Comment"],
+        "assigned_user_id": 12345  # Replace with your Gorgias User ID
     }
 
     headers = {
@@ -91,12 +101,16 @@ def create_gorgias_ticket(comment):
         "Content-Type": "application/json"
     }
 
-    response = requests.post(GORGIAS_API_URL, json=ticket_data, headers=headers)
+    try:
+        response = requests.post(GORGIAS_API_URL, json=ticket_data, headers=headers)
 
-    if response.status_code == 201:
-        print(f"Ticket created for comment: {comment['text']}")
-    else:
-        print(f"Failed to create ticket: {response.status_code}, {response.text}")
+        if response.status_code == 201:
+            print(f"Ticket created for comment: {comment['text']}")
+        else:
+            print(f"Failed to create ticket: {response.status_code}, {response.text}")
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error connecting to Gorgias API: {e}")
 
 # === Main Process ===
 def main():
