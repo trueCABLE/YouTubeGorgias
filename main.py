@@ -80,10 +80,8 @@ def fetch_youtube_comments():
 # === Gorgias API ===
 def create_gorgias_ticket(comment):
     """Create a Gorgias ticket for a YouTube comment."""
-    # Construct the link to the highlighted comment
     comment_link = f"https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']}"
 
-    # Create the ticket payload
     ticket_data = {
         "subject": f"New Comment from {comment['author']}",
         "description": (
@@ -93,7 +91,7 @@ def create_gorgias_ticket(comment):
             f"[View Comment on YouTube]({comment_link})"
         ),
         "tags": ["YouTube", "Comment"],
-        "assigned_user_id": 1591495  # Replace with your numeric Gorgias User ID
+        "assigned_user_id": 1591495
     }
 
     headers = {
@@ -101,7 +99,6 @@ def create_gorgias_ticket(comment):
         "Content-Type": "application/json"
     }
 
-    # Debugging: Print payload and headers
     print("Headers:", headers)
     print("Payload:", ticket_data)
 
@@ -111,7 +108,9 @@ def create_gorgias_ticket(comment):
         if response.status_code == 201:
             print(f"Ticket created for comment: {comment['text']}")
         else:
-            print(f"Failed to create ticket: {response.status_code}, {response.text}")
+            print(f"Failed to create ticket: {response.status_code} - {response.text}")
+            print("Request Payload:", ticket_data)
+            print("Headers:", headers)
 
     except requests.exceptions.RequestException as e:
         print(f"Error connecting to Gorgias API: {e}")
