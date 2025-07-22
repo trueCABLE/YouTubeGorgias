@@ -7,7 +7,7 @@ from datetime import datetime
 # === Environment Variables ===
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 GORGIAS_API_KEY = os.getenv('GORGIAS_API_KEY')
-GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://YOUR_GORGIAS_SUBDOMAIN.gorgias.com/api/tickets')
+GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://truecable.gorgias.com/api/tickets')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 
 # === Database Setup ===
