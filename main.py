@@ -35,11 +35,10 @@ def get_last_synced_comment():
     conn.close()
     return result[0] if result else None
 
-def save_last_synced_comment(comment_id):
-    """Save the last synced comment ID to the database."""
+def mark_comment_as_synced(comment_id):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO sync (id) VALUES (?)", (comment_id,))
+    cursor.execute("INSERT OR IGNORE INTO sync (id) VALUES (?)", (comment_id,))
     conn.commit()
     conn.close()
 
@@ -129,27 +128,26 @@ def create_gorgias_ticket(comment):
         print(f"Error connecting to Gorgias API: {e}")
 
 def is_comment_synced(comment_id):
-    """Check if a comment ID has already been synced."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("SELECT 1 FROM sync WHERE id = ?", (comment_id,))
-    result = cursor.fetchone()
+    exists = cursor.fetchone() is not None
     conn.close()
-    return result is not None
+    return exists
 
 def main():
-    """Main function to fetch comments and sync with Gorgias."""
     init_db()
 
-    # Fetch comments from YouTube
+    # Fetch latest comments from YouTube
     comments = fetch_youtube_comments()
 
     for comment in comments:
         if is_comment_synced(comment["id"]):
-            continue  # Skip already-synced comment
+            continue  # Skip already-synced comments
 
+        # Only ticket new, unseen comments
         create_gorgias_ticket(comment)
-        save_last_synced_comment(comment["id"])
+        mark_comment_as_synced(comment["id"])
 
 if __name__ == "__main__":
     main()
