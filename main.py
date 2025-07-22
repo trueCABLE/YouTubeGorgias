@@ -2,7 +2,7 @@ import os
 import requests
 from googleapiclient.discovery import build
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import base64
 
 # === Environment Variables ===
@@ -138,14 +138,25 @@ def is_comment_synced(comment_id):
 def main():
     init_db()
 
-    # Fetch latest comments from YouTube
+    # Define 24-hour cutoff
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+
     comments = fetch_youtube_comments()
 
     for comment in comments:
-        if is_comment_synced(comment["id"]):
-            continue  # Skip already-synced comments
+        # Parse the published_at field to datetime
+        published_time = datetime.strptime(comment["published_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
-        # Only ticket new, unseen comments
+        # Skip if older than 24 hours
+        if published_time < cutoff_time:
+            print(f"⏩ Skipping old comment: {comment['id']} from {published_time}")
+            continue
+
+        # Skip if already synced
+        if is_comment_synced(comment["id"]):
+            continue
+
+        # Create ticket and record ID
         create_gorgias_ticket(comment)
         mark_comment_as_synced(comment["id"])
 
