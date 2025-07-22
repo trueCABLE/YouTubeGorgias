@@ -3,11 +3,12 @@ import requests
 from googleapiclient.discovery import build
 import sqlite3
 from datetime import datetime
+import base64
 
 # === Environment Variables ===
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 GORGIAS_API_KEY = os.getenv('GORGIAS_API_KEY')
-GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://truecable.gorgias.com/api/tickets')
+GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://truecable.gorgias.com/api/v1/tickets')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 
 # === Database Setup ===
@@ -96,8 +97,13 @@ def create_gorgias_ticket(comment):
         }
     }
 
+    # Use Basic Auth with email and API key
+    GORGIAS_EMAIL = os.getenv("GORGIAS_EMAIL")
+    auth_string = f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}"
+    auth_encoded = base64.b64encode(auth_string.encode()).decode()
+
     headers = {
-        "Authorization": f"Bearer {GORGIAS_API_KEY}",
+        "Authorization": f"Basic {auth_encoded}",
         "Content-Type": "application/json"
     }
 
