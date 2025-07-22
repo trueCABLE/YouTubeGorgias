@@ -15,13 +15,12 @@ CHANNEL_ID = os.getenv('CHANNEL_ID')
 DB_FILE = "data.db"
 
 def init_db():
-    """Initialize the SQLite database to store the last synced comment."""
+    """Initialize the SQLite database to store synced comment IDs."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync (
-            id TEXT PRIMARY KEY,
-            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            id TEXT PRIMARY KEY
         )
     """)
     conn.commit()
@@ -91,7 +90,7 @@ def create_gorgias_ticket(comment):
             f"**Published At:** {comment['published_at']}\n\n"
             f"[View Comment on YouTube]({comment_link})"
         ),
-        "tags": ["YouTube", "Comment"],
+        "tags": ["YouTube"],
         "assignee_user": {
             "id": 1591495  # Replace with your numeric Gorgias User ID
         }
@@ -120,26 +119,27 @@ def create_gorgias_ticket(comment):
     except requests.exceptions.RequestException as e:
         print(f"Error connecting to Gorgias API: {e}")
 
-# === Main Process ===
+def is_comment_synced(comment_id):
+    """Check if a comment ID has already been synced."""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM sync WHERE id = ?", (comment_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result is not None
+
 def main():
     """Main function to fetch comments and sync with Gorgias."""
     init_db()
-
-    # Get the last synced comment ID
-    last_synced = get_last_synced_comment()
 
     # Fetch comments from YouTube
     comments = fetch_youtube_comments()
 
     for comment in comments:
-        # Skip already synced comments
-        if comment["id"] == last_synced:
-            break
+        if is_comment_synced(comment["id"]):
+            continue  # Skip already-synced comment
 
-        # Create a Gorgias ticket
         create_gorgias_ticket(comment)
-
-        # Save the last synced comment ID
         save_last_synced_comment(comment["id"])
 
 if __name__ == "__main__":
