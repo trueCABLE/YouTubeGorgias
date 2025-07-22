@@ -92,6 +92,9 @@ def create_gorgias_ticket(comment):
                 "channel": "api",
                 "via": "api",
                 "from_agent": False,
+                "sender": {
+                    "name": comment['author']
+                },
                 "body_text": (
                     f"**Comment:** {comment['text']}\n\n"
                     f"**Author:** {comment['author']}\n"
