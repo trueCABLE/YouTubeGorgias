@@ -20,7 +20,8 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS sync (
-            id TEXT PRIMARY KEY
+            id TEXT PRIMARY KEY,
+            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
