@@ -84,16 +84,23 @@ def create_gorgias_ticket(comment):
 
     ticket_data = {
         "subject": f"New Comment from {comment['author']}",
-        "description": (
-            f"**Comment:** {comment['text']}\n\n"
-            f"**Author:** {comment['author']}\n"
-            f"**Published At:** {comment['published_at']}\n\n"
-            f"[View Comment on YouTube]({comment_link})"
-        ),
+        "channel": "api",
+        "via": "api",
         "tags": ["YouTube"],
-        "assignee_user": {
-            "id": 1591495  # Replace with your numeric Gorgias User ID
-        }
+        "assignee_user_id": 1591495,  # <- Flat integer, not nested
+        "messages": [
+            {
+                "channel": "api",
+                "via": "api",
+                "from_agent": False,
+                "body_text": (
+                    f"**Comment:** {comment['text']}\n\n"
+                    f"**Author:** {comment['author']}\n"
+                    f"**Published At:** {comment['published_at']}\n\n"
+                    f"[View Comment on YouTube](https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']})"
+                )
+            }
+        ]
     }
 
     # Use Basic Auth with email and API key
