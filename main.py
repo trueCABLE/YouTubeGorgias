@@ -87,7 +87,6 @@ def create_gorgias_ticket(comment):
         "channel": "api",
         "via": "api",
         "tags": ["YouTube"],
-        "assignee_user_id": 1591495,  # <- Flat integer, not nested
         "messages": [
             {
                 "channel": "api",
