@@ -93,7 +93,7 @@ def create_gorgias_ticket(comment):
             f"[View Comment on YouTube]({comment_link})"
         ),
         "tags": ["YouTube", "Comment"],
-        "assigned_user_id": "U07SYNHJAR4"  # Replace with your actual Gorgias User ID (string or integer)
+        "assigned_user_id": "1591495"  # Replace with your actual Gorgias User ID (string or integer)
     }
 
     headers = {
