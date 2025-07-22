@@ -49,23 +49,24 @@ def fetch_youtube_comments():
     try:
         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        request = youtube.commentThreads().list(
+        request = youtube.comments().list(
             part="snippet",
-            allThreadsRelatedToChannelId=CHANNEL_ID,
             maxResults=100,
-            order="time"
+            order="time",
+            textFormat="plainText",
+            parentId=None  # optional, can be left to fetch all top-level
         )
         response = request.execute()
 
         comments = []
         for item in response.get("items", []):
-            snippet = item["snippet"]["topLevelComment"]["snippet"]
+            snippet = item["snippet"]
             comment_data = {
-                "id": item["snippet"]["topLevelComment"]["id"],  # ✅ real unique comment ID
+                "id": item["id"],  # REAL comment ID
                 "author": snippet["authorDisplayName"],
                 "text": snippet["textDisplay"],
                 "published_at": snippet["publishedAt"],
-                "video_id": snippet["videoId"],
+                "video_id": snippet.get("videoId", "unknown")
             }
             comments.append(comment_data)
 
