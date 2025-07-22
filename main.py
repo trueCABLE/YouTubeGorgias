@@ -91,16 +91,15 @@ def create_gorgias_ticket(comment):
             f"[View Comment on YouTube]({comment_link})"
         ),
         "tags": ["YouTube", "Comment"],
-        "assigned_user_id": 1591495
+        "assignee_user": {
+            "id": 1591495  # Replace with your numeric Gorgias User ID
+        }
     }
 
     headers = {
         "Authorization": f"Bearer {GORGIAS_API_KEY}",
         "Content-Type": "application/json"
     }
-
-    print("Headers:", headers)
-    print("Payload:", ticket_data)
 
     try:
         response = requests.post(GORGIAS_API_URL, json=ticket_data, headers=headers)
