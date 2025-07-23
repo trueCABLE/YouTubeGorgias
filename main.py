@@ -22,12 +22,33 @@ def is_comment_synced(comment_id):
 def mark_comment_as_synced(comment_id):
     redis_client.sadd("synced_youtube_comments", comment_id)
 
+video_metadata_cache = {}
+
+def get_video_metadata(youtube, video_id):
+    """Fetch and cache title and thumbnail for a video."""
+    if video_id in video_metadata_cache:
+        return video_metadata_cache[video_id]
+
+    try:
+        resp = youtube.videos().list(part="snippet", id=video_id).execute()
+        items = resp.get("items", [])
+        if items:
+            snippet = items[0]["snippet"]
+            title = snippet["title"]
+            thumbnail_url = snippet["thumbnails"]["default"]["url"]
+            video_metadata_cache[video_id] = {"title": title, "thumbnail": thumbnail_url}
+            return video_metadata_cache[video_id]
+    except Exception as e:
+        print(f"❌ Error fetching metadata for {video_id}: {e}")
+    
+    return {"title": "Unknown Video", "thumbnail": ""}
+
 def fetch_all_comments_from_all_videos():
     youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
     comments = []
 
-    # Step 1: Get all video IDs
+    # Get all video IDs
     video_ids = []
     next_page_token = None
     while True:
@@ -47,9 +68,13 @@ def fetch_all_comments_from_all_videos():
         if not next_page_token:
             break
 
-    # Step 2: Fetch comments and replies per video
+    # Fetch comments and replies
     for vid in video_ids:
+        metadata = get_video_metadata(youtube, vid)
+        video_title = metadata["title"]
+        video_thumb = metadata["thumbnail"]
         next_comment_page = None
+
         while True:
             resp = youtube.commentThreads().list(
                 part="snippet,replies",
@@ -61,23 +86,27 @@ def fetch_all_comments_from_all_videos():
 
             for item in resp.get("items", []):
                 top_comment = item["snippet"]["topLevelComment"]
-                top_snippet = top_comment["snippet"]
-                published_at = datetime.strptime(top_snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                top_snip = top_comment["snippet"]
+                published_at = datetime.strptime(top_snip["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
                 if published_at < cutoff_time:
-                    print(f"⏹️ Reached cutoff at comment {top_comment['id']} from {published_at}")
                     continue
-                if top_snippet.get("authorChannelId", {}).get("value") == CHANNEL_ID:
+                if top_snip.get("authorChannelId", {}).get("value") == CHANNEL_ID:
                     continue
 
                 comments.append({
                     "id": top_comment["id"],
-                    "author": top_snippet.get("authorDisplayName", "Unknown"),
-                    "text": top_snippet.get("textDisplay", ""),
-                    "published_at": top_snippet.get("publishedAt", ""),
-                    "video_id": vid
+                    "author": top_snip.get("authorDisplayName", "Unknown"),
+                    "text": top_snip.get("textDisplay", ""),
+                    "published_at": top_snip.get("publishedAt", ""),
+                    "video_id": vid,
+                    "video_title": video_title,
+                    "video_thumbnail": video_thumb,
+                    "is_reply": False,
+                    "parent_text": ""
                 })
 
+                # Replies
                 if item["snippet"].get("totalReplyCount", 0) > 0:
                     replies = item.get("replies", {}).get("comments", [])
                     for reply in replies:
@@ -87,12 +116,17 @@ def fetch_all_comments_from_all_videos():
                             continue
                         if r_snip.get("authorChannelId", {}).get("value") == CHANNEL_ID:
                             continue
+
                         comments.append({
                             "id": reply["id"],
                             "author": r_snip.get("authorDisplayName", "Unknown"),
                             "text": r_snip.get("textDisplay", ""),
                             "published_at": r_snip.get("publishedAt", ""),
-                            "video_id": vid
+                            "video_id": vid,
+                            "video_title": video_title,
+                            "video_thumbnail": video_thumb,
+                            "is_reply": True,
+                            "parent_text": top_snip.get("textDisplay", "")
                         })
 
             next_comment_page = resp.get("nextPageToken")
@@ -105,6 +139,20 @@ def create_gorgias_ticket(comment):
     base_link = f"https://www.youtube.com/watch?v={comment['video_id']}"
     comment_link = f"{base_link}&lc={comment['id']}"
 
+    body_lines = [
+        f"**Comment:** {comment['text']}",
+        f"**Author:** {comment['author']}",
+        f"**Published At:** {comment['published_at']}",
+        f"**Video Title:** {comment.get('video_title', 'Unknown')}",
+        f"[View Comment on YouTube]({comment_link})"
+    ]
+
+    if comment.get("is_reply") and comment.get("parent_text"):
+        body_lines.insert(1, f"**In reply to:** {comment['parent_text']}")
+
+    if comment.get("video_thumbnail"):
+        body_lines.append(f"\n![Video Thumbnail]({comment['video_thumbnail']})")
+
     ticket_data = {
         "subject": f"New YouTube Comment from {comment['author']}",
         "channel": "api",
@@ -116,12 +164,7 @@ def create_gorgias_ticket(comment):
                 "via": "api",
                 "from_agent": False,
                 "sender": {"name": comment['author']},
-                "body_text": (
-                    f"**Comment:** {comment['text']}\n\n"
-                    f"**Author:** {comment['author']}\n"
-                    f"**Published At:** {comment['published_at']}\n\n"
-                    f"[View Comment on YouTube]({comment_link})"
-                )
+                "body_text": "\n\n".join(body_lines)
             }
         ]
     }
