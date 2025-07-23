@@ -1,15 +1,16 @@
 import os
 import requests
-from googleapiclient.discovery import build
 import sqlite3
-from datetime import datetime, timedelta, timezone
 import base64
+from datetime import datetime, timedelta, timezone
+from googleapiclient.discovery import build
 
 # === Environment Variables ===
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 GORGIAS_API_KEY = os.getenv('GORGIAS_API_KEY')
 GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://truecable.gorgias.com/api/tickets')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
+GORGIAS_EMAIL = os.getenv("GORGIAS_EMAIL")
 
 # === Database Setup ===
 DB_FILE = "data.db"
@@ -27,28 +28,30 @@ def init_db():
     conn.commit()
     conn.close()
 
-def get_last_synced_comment():
-    """Retrieve the last synced comment ID from the database."""
+def is_comment_synced(comment_id):
+    """Check if a comment has already been processed."""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM sync ORDER BY synced_at DESC LIMIT 1")
-    result = cursor.fetchone()
+    cursor.execute("SELECT 1 FROM sync WHERE id = ?", (comment_id,))
+    exists = cursor.fetchone() is not None
     conn.close()
-    return result[0] if result else None
+    return exists
 
 def mark_comment_as_synced(comment_id):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("INSERT OR IGNORE INTO sync (id) VALUES (?)", (comment_id,))
-    conn.commit()
-    conn.close()
+    """Record a comment ID as synced."""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO sync (id) VALUES (?)", (comment_id,))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error saving comment ID {comment_id}: {e}")
 
-# === YouTube API ===
 def fetch_youtube_comments():
-    """Fetch latest unique top-level comments across the channel."""
+    """Fetch recent top-level comments from your channel."""
     try:
         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
         request = youtube.commentThreads().list(
             part="snippet",
             allThreadsRelatedToChannelId=CHANNEL_ID,
@@ -62,23 +65,22 @@ def fetch_youtube_comments():
             comment = item["snippet"]["topLevelComment"]
             snippet = comment["snippet"]
             comment_data = {
-                "id": comment["id"],  # ✅ ACTUAL COMMENT ID
-                "author": snippet["authorDisplayName"],
-                "text": snippet["textDisplay"],
-                "published_at": snippet["publishedAt"],
-                "video_id": snippet["videoId"]
+                "id": comment["id"],  # Unique comment ID
+                "author": snippet.get("authorDisplayName", "Unknown"),
+                "text": snippet.get("textDisplay", ""),
+                "published_at": snippet.get("publishedAt", ""),
+                "video_id": snippet.get("videoId", "")
             }
             comments.append(comment_data)
 
         return comments
 
     except Exception as e:
-        print(f"Error fetching YouTube comments: {e}")
+        print(f"❌ Error fetching YouTube comments: {e}")
         return []
 
-# === Gorgias API ===
 def create_gorgias_ticket(comment):
-    """Create a Gorgias ticket for a YouTube comment."""
+    """Send the YouTube comment to Gorgias as a ticket."""
     comment_link = f"https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']}"
 
     ticket_data = {
@@ -98,17 +100,14 @@ def create_gorgias_ticket(comment):
                     f"**Comment:** {comment['text']}\n\n"
                     f"**Author:** {comment['author']}\n"
                     f"**Published At:** {comment['published_at']}\n\n"
-                    f"[View Comment on YouTube](https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']})"
+                    f"[View Comment on YouTube]({comment_link})"
                 )
             }
         ]
     }
 
-    # Use Basic Auth with email and API key
-    GORGIAS_EMAIL = os.getenv("GORGIAS_EMAIL")
     auth_string = f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}"
     auth_encoded = base64.b64encode(auth_string.encode()).decode()
-
     headers = {
         "Authorization": f"Basic {auth_encoded}",
         "Content-Type": "application/json"
@@ -116,47 +115,33 @@ def create_gorgias_ticket(comment):
 
     try:
         response = requests.post(GORGIAS_API_URL, json=ticket_data, headers=headers)
-
         if response.status_code == 201:
-            print(f"Ticket created for comment: {comment['text']}")
+            print(f"✅ Ticket created for comment: {comment['id']}")
         else:
-            print(f"Failed to create ticket: {response.status_code} - {response.text}")
-            print("Request Payload:", ticket_data)
-            print("Headers:", headers)
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error connecting to Gorgias API: {e}")
-
-def is_comment_synced(comment_id):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sync WHERE id = ?", (comment_id,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
+            print(f"❌ Gorgias error {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"❌ Failed to send ticket: {e}")
 
 def main():
     init_db()
-
-    # Define 24-hour cutoff
+    comments = fetch_youtube_comments()
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
 
-    comments = fetch_youtube_comments()
-
     for comment in comments:
-        # Parse the published_at field to datetime
-        published_time = datetime.strptime(comment["published_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        try:
+            published_time = datetime.strptime(comment["published_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except Exception:
+            print(f"⚠️ Skipping comment with invalid timestamp: {comment}")
+            continue
 
-        # Skip if older than 24 hours
         if published_time < cutoff_time:
             print(f"⏩ Skipping old comment: {comment['id']} from {published_time}")
             continue
 
-        # Skip if already synced
         if is_comment_synced(comment["id"]):
+            print(f"⏭️ Already synced: {comment['id']}")
             continue
 
-        # Create ticket and record ID
         create_gorgias_ticket(comment)
         mark_comment_as_synced(comment["id"])
 
