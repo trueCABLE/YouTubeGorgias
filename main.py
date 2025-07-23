@@ -11,9 +11,9 @@ GORGIAS_API_KEY = os.getenv('GORGIAS_API_KEY')
 GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://truecable.gorgias.com/api/tickets')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 GORGIAS_EMAIL = os.getenv("GORGIAS_EMAIL")
-REDIS_URL = os.getenv("REDIS_URL")  # Set this in Render
+REDIS_URL = os.getenv("REDIS_URL")
 
-# === Redis Client ===
+# === Redis ===
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 def is_comment_synced(comment_id):
@@ -22,63 +22,67 @@ def is_comment_synced(comment_id):
 def mark_comment_as_synced(comment_id):
     redis_client.sadd("synced_youtube_comments", comment_id)
 
-def fetch_youtube_comments_and_replies():
-    """Fetch top-level comments and their replies from the channel."""
-    try:
-        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+def fetch_comments_and_replies():
+    youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+    comments = []
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
 
-        request = youtube.commentThreads().list(
-            part="snippet,replies",
-            allThreadsRelatedToChannelId=CHANNEL_ID,
-            maxResults=100,
-            order="time"
-        )
-        response = request.execute()
+    request = youtube.commentThreads().list(
+        part="snippet,replies",
+        allThreadsRelatedToChannelId=CHANNEL_ID,
+        maxResults=100,
+        order="time"
+    )
+    response = request.execute()
 
-        all_comments = []
+    for item in response.get("items", []):
+        top_comment = item["snippet"]["topLevelComment"]
+        top_snippet = top_comment["snippet"]
+        published_at = datetime.strptime(top_snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
-        for item in response.get("items", []):
-            # === Top-level comment ===
-            top_comment = item["snippet"]["topLevelComment"]
-            top_snippet = top_comment["snippet"]
-            all_comments.append({
-                "id": top_comment["id"],
-                "author": top_snippet.get("authorDisplayName", "Unknown"),
-                "text": top_snippet.get("textDisplay", ""),
-                "published_at": top_snippet.get("publishedAt", ""),
-                "video_id": top_snippet.get("videoId", "")
-            })
+        # Stop if comment is older than cutoff (no point in continuing)
+        if published_at < cutoff_time:
+            print(f"⏹️ Reached cutoff at comment {top_comment['id']} from {published_at}")
+            break
 
-            # === Replies (if any) ===
-            reply_count = item["snippet"].get("totalReplyCount", 0)
-            if reply_count > 0:
-                parent_id = top_comment["id"]
-                reply_request = youtube.comments().list(
-                    part="snippet",
-                    parentId=parent_id,
-                    maxResults=100
-                )
-                reply_response = reply_request.execute()
-                for reply in reply_response.get("items", []):
-                    reply_snippet = reply["snippet"]
-                    all_comments.append({
-                        "id": reply["id"],
-                        "author": reply_snippet.get("authorDisplayName", "Unknown"),
-                        "text": reply_snippet.get("textDisplay", ""),
-                        "published_at": reply_snippet.get("publishedAt", ""),
-                        "video_id": reply_snippet.get("videoId", "")
-                    })
+        # Skip if from our own channel
+        if top_snippet.get("authorChannelId", {}).get("value") == CHANNEL_ID:
+            continue
 
-        return all_comments
+        comments.append({
+            "id": top_comment["id"],
+            "author": top_snippet.get("authorDisplayName", "Unknown"),
+            "text": top_snippet.get("textDisplay", ""),
+            "published_at": top_snippet.get("publishedAt", ""),
+            "video_id": top_snippet.get("videoId", "")
+        })
 
-    except Exception as e:
-        print(f"❌ Error fetching comments: {e}")
-        return []
+        # Fetch replies (if any)
+        if item["snippet"].get("totalReplyCount", 0) > 0:
+            replies = item.get("replies", {}).get("comments", [])
+            for reply in replies:
+                r_snip = reply["snippet"]
+                r_time = datetime.strptime(r_snip["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                if r_time < cutoff_time:
+                    continue
+                if r_snip.get("authorChannelId", {}).get("value") == CHANNEL_ID:
+                    continue
+                comments.append({
+                    "id": reply["id"],
+                    "author": r_snip.get("authorDisplayName", "Unknown"),
+                    "text": r_snip.get("textDisplay", ""),
+                    "published_at": r_snip.get("publishedAt", ""),
+                    "video_id": r_snip.get("videoId", "")
+                })
+
+    return comments
 
 def create_gorgias_ticket(comment):
-    comment_link = f"https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']}"
+    base_link = f"https://www.youtube.com/watch?v={comment['video_id']}"
+    comment_link = f"{base_link}&lc={comment['id']}"
+
     ticket_data = {
-        "subject": f"New Comment from {comment['author']}",
+        "subject": f"New YouTube Comment from {comment['author']}",
         "channel": "api",
         "via": "api",
         "tags": ["YouTube"],
@@ -87,9 +91,7 @@ def create_gorgias_ticket(comment):
                 "channel": "api",
                 "via": "api",
                 "from_agent": False,
-                "sender": {
-                    "name": comment['author']
-                },
+                "sender": {"name": comment['author']},
                 "body_text": (
                     f"**Comment:** {comment['text']}\n\n"
                     f"**Author:** {comment['author']}\n"
@@ -100,43 +102,31 @@ def create_gorgias_ticket(comment):
         ]
     }
 
-    auth_string = f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}"
-    auth_encoded = base64.b64encode(auth_string.encode()).decode()
+    auth = base64.b64encode(f"{GORGIAS_EMAIL}:{GORGIAS_API_KEY}".encode()).decode()
     headers = {
-        "Authorization": f"Basic {auth_encoded}",
+        "Authorization": f"Basic {auth}",
         "Content-Type": "application/json"
     }
 
     try:
-        response = requests.post(GORGIAS_API_URL, json=ticket_data, headers=headers)
-        if response.status_code == 201:
-            print(f"✅ Ticket created for comment: {comment['id']}")
+        r = requests.post(GORGIAS_API_URL, json=ticket_data, headers=headers)
+        if r.status_code == 201:
+            print(f"✅ Ticket created for: {comment['id']}")
         else:
-            print(f"❌ Gorgias error {response.status_code}: {response.text}")
+            print(f"❌ Gorgias error {r.status_code}: {r.text}")
     except Exception as e:
-        print(f"❌ Failed to send ticket: {e}")
+        print(f"❌ Ticket send failed: {e}")
 
 def main():
-    comments = fetch_youtube_comments_and_replies()
-    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+    comments = fetch_comments_and_replies()
 
-    for comment in comments:
-        try:
-            published_time = datetime.strptime(comment["published_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        except Exception:
-            print(f"⚠️ Skipping invalid timestamp: {comment}")
+    for c in comments:
+        if is_comment_synced(c["id"]):
+            print(f"⏭️ Already synced: {c['id']}")
             continue
 
-        if published_time < cutoff_time:
-            print(f"⏩ Skipping old comment: {comment['id']} from {published_time}")
-            continue
-
-        if is_comment_synced(comment["id"]):
-            print(f"⏭️ Already synced: {comment['id']}")
-            continue
-
-        create_gorgias_ticket(comment)
-        mark_comment_as_synced(comment["id"])
+        create_gorgias_ticket(c)
+        mark_comment_as_synced(c["id"])
 
 if __name__ == "__main__":
     main()
