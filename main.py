@@ -22,58 +22,82 @@ def is_comment_synced(comment_id):
 def mark_comment_as_synced(comment_id):
     redis_client.sadd("synced_youtube_comments", comment_id)
 
-def fetch_comments_and_replies():
+def fetch_all_comments_from_all_videos():
     youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-    comments = []
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
+    comments = []
 
-    request = youtube.commentThreads().list(
-        part="snippet,replies",
-        allThreadsRelatedToChannelId=CHANNEL_ID,
-        maxResults=100,
-        order="time"
-    )
-    response = request.execute()
+    # Step 1: Get all video IDs
+    video_ids = []
+    next_page_token = None
+    while True:
+        resp = youtube.search().list(
+            part="id",
+            channelId=CHANNEL_ID,
+            maxResults=50,
+            type="video",
+            order="date",
+            pageToken=next_page_token
+        ).execute()
 
-    for item in response.get("items", []):
-        top_comment = item["snippet"]["topLevelComment"]
-        top_snippet = top_comment["snippet"]
-        published_at = datetime.strptime(top_snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        for item in resp.get("items", []):
+            video_ids.append(item["id"]["videoId"])
 
-        # Stop if comment is older than cutoff (no point in continuing)
-        if published_at < cutoff_time:
-            print(f"⏹️ Reached cutoff at comment {top_comment['id']} from {published_at}")
+        next_page_token = resp.get("nextPageToken")
+        if not next_page_token:
             break
 
-        # Skip if from our own channel
-        if top_snippet.get("authorChannelId", {}).get("value") == CHANNEL_ID:
-            continue
+    # Step 2: Fetch comments and replies per video
+    for vid in video_ids:
+        next_comment_page = None
+        while True:
+            resp = youtube.commentThreads().list(
+                part="snippet,replies",
+                videoId=vid,
+                maxResults=100,
+                order="time",
+                pageToken=next_comment_page
+            ).execute()
 
-        comments.append({
-            "id": top_comment["id"],
-            "author": top_snippet.get("authorDisplayName", "Unknown"),
-            "text": top_snippet.get("textDisplay", ""),
-            "published_at": top_snippet.get("publishedAt", ""),
-            "video_id": top_snippet.get("videoId", "")
-        })
+            for item in resp.get("items", []):
+                top_comment = item["snippet"]["topLevelComment"]
+                top_snippet = top_comment["snippet"]
+                published_at = datetime.strptime(top_snippet["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
-        # Fetch replies (if any)
-        if item["snippet"].get("totalReplyCount", 0) > 0:
-            replies = item.get("replies", {}).get("comments", [])
-            for reply in replies:
-                r_snip = reply["snippet"]
-                r_time = datetime.strptime(r_snip["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                if r_time < cutoff_time:
+                if published_at < cutoff_time:
+                    print(f"⏹️ Reached cutoff at comment {top_comment['id']} from {published_at}")
                     continue
-                if r_snip.get("authorChannelId", {}).get("value") == CHANNEL_ID:
+                if top_snippet.get("authorChannelId", {}).get("value") == CHANNEL_ID:
                     continue
+
                 comments.append({
-                    "id": reply["id"],
-                    "author": r_snip.get("authorDisplayName", "Unknown"),
-                    "text": r_snip.get("textDisplay", ""),
-                    "published_at": r_snip.get("publishedAt", ""),
-                    "video_id": r_snip.get("videoId", "")
+                    "id": top_comment["id"],
+                    "author": top_snippet.get("authorDisplayName", "Unknown"),
+                    "text": top_snippet.get("textDisplay", ""),
+                    "published_at": top_snippet.get("publishedAt", ""),
+                    "video_id": vid
                 })
+
+                if item["snippet"].get("totalReplyCount", 0) > 0:
+                    replies = item.get("replies", {}).get("comments", [])
+                    for reply in replies:
+                        r_snip = reply["snippet"]
+                        r_time = datetime.strptime(r_snip["publishedAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                        if r_time < cutoff_time:
+                            continue
+                        if r_snip.get("authorChannelId", {}).get("value") == CHANNEL_ID:
+                            continue
+                        comments.append({
+                            "id": reply["id"],
+                            "author": r_snip.get("authorDisplayName", "Unknown"),
+                            "text": r_snip.get("textDisplay", ""),
+                            "published_at": r_snip.get("publishedAt", ""),
+                            "video_id": vid
+                        })
+
+            next_comment_page = resp.get("nextPageToken")
+            if not next_comment_page:
+                break
 
     return comments
 
@@ -118,7 +142,7 @@ def create_gorgias_ticket(comment):
         print(f"❌ Ticket send failed: {e}")
 
 def main():
-    comments = fetch_comments_and_replies()
+    comments = fetch_all_comments_from_all_videos()
 
     for c in comments:
         if is_comment_synced(c["id"]):
