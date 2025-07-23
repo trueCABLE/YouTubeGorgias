@@ -1,6 +1,6 @@
 import os
 import requests
-import sqlite3
+import redis
 import base64
 from datetime import datetime, timedelta, timezone
 from googleapiclient.discovery import build
@@ -15,38 +15,17 @@ GORGIAS_EMAIL = os.getenv("GORGIAS_EMAIL")
 # === Database Setup ===
 DB_FILE = "data.db"
 
-def init_db():
-    """Initialize the SQLite database to store synced comment IDs."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sync (
-            id TEXT PRIMARY KEY,
-            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    conn.close()
+# Connect to Redis using your environment variable
+REDIS_URL = os.getenv("REDIS_URL")  # Set this in Render
+redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 def is_comment_synced(comment_id):
-    """Check if a comment has already been processed."""
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM sync WHERE id = ?", (comment_id,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
+    """Check if a comment has already been synced using Redis."""
+    return redis_client.sismember("synced_youtube_comments", comment_id)
 
 def mark_comment_as_synced(comment_id):
-    """Record a comment ID as synced."""
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR IGNORE INTO sync (id) VALUES (?)", (comment_id,))
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        print(f"❌ Error saving comment ID {comment_id}: {e}")
+    """Mark a comment ID as synced in Redis."""
+    redis_client.sadd("synced_youtube_comments", comment_id)
 
 def fetch_youtube_comments():
     """Fetch recent top-level comments from your channel."""
@@ -123,7 +102,6 @@ def create_gorgias_ticket(comment):
         print(f"❌ Failed to send ticket: {e}")
 
 def main():
-    init_db()
     comments = fetch_youtube_comments()
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
 
