@@ -11,57 +11,72 @@ GORGIAS_API_KEY = os.getenv('GORGIAS_API_KEY')
 GORGIAS_API_URL = os.getenv('GORGIAS_API_URL', 'https://truecable.gorgias.com/api/tickets')
 CHANNEL_ID = os.getenv('CHANNEL_ID')
 GORGIAS_EMAIL = os.getenv("GORGIAS_EMAIL")
-
-# === Database Setup ===
-DB_FILE = "data.db"
-
-# Connect to Redis using your environment variable
 REDIS_URL = os.getenv("REDIS_URL")  # Set this in Render
+
+# === Redis Client ===
 redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 def is_comment_synced(comment_id):
-    """Check if a comment has already been synced using Redis."""
     return redis_client.sismember("synced_youtube_comments", comment_id)
 
 def mark_comment_as_synced(comment_id):
-    """Mark a comment ID as synced in Redis."""
     redis_client.sadd("synced_youtube_comments", comment_id)
 
-def fetch_youtube_comments():
-    """Fetch recent top-level comments from your channel."""
+def fetch_youtube_comments_and_replies():
+    """Fetch top-level comments and their replies from the channel."""
     try:
         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
         request = youtube.commentThreads().list(
-            part="snippet",
+            part="snippet,replies",
             allThreadsRelatedToChannelId=CHANNEL_ID,
             maxResults=100,
             order="time"
         )
         response = request.execute()
 
-        comments = []
-        for item in response.get("items", []):
-            comment = item["snippet"]["topLevelComment"]
-            snippet = comment["snippet"]
-            comment_data = {
-                "id": comment["id"],  # Unique comment ID
-                "author": snippet.get("authorDisplayName", "Unknown"),
-                "text": snippet.get("textDisplay", ""),
-                "published_at": snippet.get("publishedAt", ""),
-                "video_id": snippet.get("videoId", "")
-            }
-            comments.append(comment_data)
+        all_comments = []
 
-        return comments
+        for item in response.get("items", []):
+            # === Top-level comment ===
+            top_comment = item["snippet"]["topLevelComment"]
+            top_snippet = top_comment["snippet"]
+            all_comments.append({
+                "id": top_comment["id"],
+                "author": top_snippet.get("authorDisplayName", "Unknown"),
+                "text": top_snippet.get("textDisplay", ""),
+                "published_at": top_snippet.get("publishedAt", ""),
+                "video_id": top_snippet.get("videoId", "")
+            })
+
+            # === Replies (if any) ===
+            reply_count = item["snippet"].get("totalReplyCount", 0)
+            if reply_count > 0:
+                parent_id = top_comment["id"]
+                reply_request = youtube.comments().list(
+                    part="snippet",
+                    parentId=parent_id,
+                    maxResults=100
+                )
+                reply_response = reply_request.execute()
+                for reply in reply_response.get("items", []):
+                    reply_snippet = reply["snippet"]
+                    all_comments.append({
+                        "id": reply["id"],
+                        "author": reply_snippet.get("authorDisplayName", "Unknown"),
+                        "text": reply_snippet.get("textDisplay", ""),
+                        "published_at": reply_snippet.get("publishedAt", ""),
+                        "video_id": reply_snippet.get("videoId", "")
+                    })
+
+        return all_comments
 
     except Exception as e:
-        print(f"❌ Error fetching YouTube comments: {e}")
+        print(f"❌ Error fetching comments: {e}")
         return []
 
 def create_gorgias_ticket(comment):
-    """Send the YouTube comment to Gorgias as a ticket."""
     comment_link = f"https://www.youtube.com/watch?v={comment['video_id']}&lc={comment['id']}"
-
     ticket_data = {
         "subject": f"New Comment from {comment['author']}",
         "channel": "api",
@@ -102,14 +117,14 @@ def create_gorgias_ticket(comment):
         print(f"❌ Failed to send ticket: {e}")
 
 def main():
-    comments = fetch_youtube_comments()
+    comments = fetch_youtube_comments_and_replies()
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
 
     for comment in comments:
         try:
             published_time = datetime.strptime(comment["published_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
         except Exception:
-            print(f"⚠️ Skipping comment with invalid timestamp: {comment}")
+            print(f"⚠️ Skipping invalid timestamp: {comment}")
             continue
 
         if published_time < cutoff_time:
