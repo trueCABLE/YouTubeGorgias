@@ -43,30 +43,65 @@ def get_video_metadata(youtube, video_id):
     
     return {"title": "Unknown Video", "thumbnail": ""}
 
+def get_cached_video_ids():
+    return redis_client.lrange("cached_video_ids", 0, -1)
+
+def cache_video_ids(video_ids):
+    redis_client.delete("cached_video_ids")  # clear existing first
+    if video_ids:
+        redis_client.rpush("cached_video_ids", *video_ids)
+
 def fetch_all_comments_from_all_videos():
     youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
     cutoff_time = datetime.now(timezone.utc) - timedelta(hours=24)
     comments = []
 
-    # Get all video IDs
-    video_ids = []
-    next_page_token = None
-    while True:
-        resp = youtube.search().list(
-            part="id",
-            channelId=CHANNEL_ID,
-            maxResults=50,
-            type="video",
-            order="date",
-            pageToken=next_page_token
-        ).execute()
+    # === Check cache expiration (every 2 days) ===
+    last_refresh_str = redis_client.get("video_cache_last_refresh")
+    now = datetime.now(timezone.utc)
 
-        for item in resp.get("items", []):
-            video_ids.append(item["id"]["videoId"])
+    if last_refresh_str:
+        last_refresh = datetime.fromisoformat(last_refresh_str)
+        if now - last_refresh > timedelta(days=2):
+            print("♻️ Cache is older than 2 days. Clearing cached_video_ids.")
+            redis_client.delete("cached_video_ids")
+            redis_client.set("video_cache_last_refresh", now.isoformat())
+    else:
+        print("📅 No cache refresh timestamp found. Setting now.")
+        redis_client.set("video_cache_last_refresh", now.isoformat())
 
-        next_page_token = resp.get("nextPageToken")
-        if not next_page_token:
-            break
+    # === Load from cache or fetch video IDs ===
+    cached_video_ids = redis_client.lrange("cached_video_ids", 0, -1)
+    if cached_video_ids:
+        print(f"✅ Loaded {len(cached_video_ids)} video IDs from cache.")
+        video_ids = cached_video_ids
+    else:
+        print("🔍 Fetching video IDs from YouTube API...")
+        video_ids = []
+        next_page_token = None
+        while True:
+            resp = youtube.search().list(
+                part="id",
+                channelId=CHANNEL_ID,
+                maxResults=50,
+                type="video",
+                order="date",
+                pageToken=next_page_token
+            ).execute()
+
+            for item in resp.get("items", []):
+                video_ids.append(item["id"]["videoId"])
+
+            next_page_token = resp.get("nextPageToken")
+            if not next_page_token:
+                break
+
+        # Cache results
+        if video_ids:
+            redis_client.delete("cached_video_ids")
+            redis_client.rpush("cached_video_ids", *video_ids)
+            redis_client.set("video_cache_last_refresh", now.isoformat())
+            print(f"📦 Cached {len(video_ids)} video IDs.")
 
     # Fetch comments and replies
     for vid in video_ids:
